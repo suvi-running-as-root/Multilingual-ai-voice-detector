@@ -1,9 +1,35 @@
-# SecureCall - AI Voice Fraud Detector
+# 🛡️ SecureCall - AI Voice Fraud Detector
 
-A Cybersecurity API that detects:
-1.  **AI/Deepfake Voices** (using Wav2Vec2 audio analysis).
-2.  **Scam/Fraud Keywords** (using OpenAI Whisper for transcription).
-3.  **Urgency/Aggression** (using audio signal processing).
+**SecureCall** is a cybersecurity API designed to detect **AI-generated voice scams** in real-time. It uses a **Dual-Model Approach** to analyze both *how* someone speaks (Audio) and *what* they say (Content).
+
+---
+
+## 🧠 How It Works (The Architecture)
+
+The system passes every audio file through **two parallel AI engines**:
+
+### 1. 🎙️ Primary Engine: AI Voice Detection
+*   **Model**: `facebook/wav2vec2-large-xlsr-53`
+*   **Logic**: Analyzes the raw audio signal.
+*   **What it detects**:
+    *   **Artificial Smoothness**: AI voices are mathematically "smoother" than real vocal cords.
+    *   **Low Variance**: AI lacks the natural emotional micro-jitters of humans.
+*   **Outcome**: Determines if the speaker is **HUMAN** or **AI**.
+
+### 2. 🛡️ Secondary Engine: Content Risk Analysis
+*   **Model**: `openai/whisper-small` (Multilingual)
+*   **Logic**:
+    1.  **Translates** audio from Hindi/Tamil/Telugu/Malayalam -> **English**.
+    2.  **Scans** the English text for Fraud Keywords (e.g., "OTP", "Bank", "Police", "Money").
+*   **Outcome**: Assigns a **Fraud Risk Level** (Low/Medium/High).
+
+### 🚨 Final Verdict
+The system combines both engines to give a final verdict:
+*   **CRITICAL**: AI Voice + Asking for OTP.
+*   **WARNING**: AI Voice (but just talking) OR Human asking for OTP.
+*   **SAFE**: Human voice talking normally.
+
+---
 
 ## 🚀 Setup & Run
 
@@ -11,14 +37,12 @@ A Cybersecurity API that detects:
 1.  **Python 3.10+**
 2.  **FFmpeg** (Required for audio processing)
 
----
-
-### Mac / Linux Setup
+### 🍎 Mac / Linux Setup
 1.  **Install FFmpeg**:
     ```bash
-    brew install ffmpeg
+    brew install ffmpeg  # Mac
     # OR
-    sudo apt install ffmpeg
+    sudo apt install ffmpeg # Linux
     ```
 
 2.  **Setup Environment**:
@@ -33,22 +57,19 @@ A Cybersecurity API that detects:
     uvicorn app.main:app --reload
     ```
 
----
-
-### Windows Setup (For Team)
+### 🪟 Windows Setup (For Team)
 1.  **Install FFmpeg**:
-    *   **Option A (Winget)**: Run `winget install "FFmpeg (Essentials)"` in PowerShell.
-    *   **Option B (Chocolatey)**: Run `choco install ffmpeg`.
-    *   **Option C (Manual)**: Download from [ffmpeg.org](https://ffmpeg.org/download.html), extract, and add the `bin` folder to your System PATH.
+    *   Run `winget install "FFmpeg (Essentials)"` in PowerShell.
+    *   *Or download manually from ffmpeg.org and add to PATH.*
 
 2.  **Setup Environment**:
-    Open PowerShell or Command Prompt:
+    Open **PowerShell** as Administrator:
     ```powershell
     python -m venv venv
     .\venv\Scripts\activate
     pip install -r requirements.txt
     ```
-    *Note: If you get a permission error on step 2, run `Set-ExecutionPolicy Unrestricted -Scope Process` first.*
+    *(If you get a Red Error about scripts, run: `Set-ExecutionPolicy Unrestricted -Scope Process`)*
 
 3.  **Run Server**:
     ```powershell
@@ -59,8 +80,8 @@ A Cybersecurity API that detects:
 
 ## 🧪 How to Test
 
-### 1. Verification Script (Easiest)
-We have a Python script that automatically handles the API request.
+### 1. Verification Script (Recommended)
+We have a built-in testing tool.
 
 **Run on Mac/Linux:**
 ```bash
@@ -72,30 +93,19 @@ python3 test_api.py
 python test_api.py
 ```
 
-*To test your own local file, open `test_api.py` and edit the file path at the bottom.*
+*To test your own file, open `test_api.py` in VS Code and change the file path at the bottom.*
 
-### 2. Manual Test (Base64 / URL)
-**Endpoint**: `POST /detect`
-**Header**: `X-API-Key: demo_key_123`
+### 2. API Response Implementation
+Your frontend will receive this exact JSON format:
 
 ```json
 {
-  "audio_url": "https://upload.wikimedia.org/wikipedia/commons/c/c8/Example.ogg",
-  "transcript": "Optional text override"
-}
-```
-
-## 🛡️ Response format
-```json
-{
-  "threat_level": "High",
-  "is_fraud": true,
-  "alert": "CRITICAL: High-risk call detected...",
-  "transcript_preview": "TEXT HEARD BY MODEL...",
-  "analysis": {
-    "voice_type": "AI",
-    "sentiment": "Urgent/Aggressive",
-    "keywords_detected": ["urgency:arrest"]
-  }
+  "classification": "AI",
+  "confidence": 0.92,
+  "explanation": "High temporal smoothness (robotic consistency)",
+  "fraud_risk": "HIGH",
+  "risk_keywords": ["otp", "bank"],
+  "overall_risk": "CRITICAL",
+  "transcript_preview": "Hello, I need your bank OTP immediately."
 }
 ```
