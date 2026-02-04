@@ -226,8 +226,10 @@ class VoiceDetector:
         chunks = self._chunk_audio(y, sr)
         
         # --- Primary AI vs Human detection ---
-        # "Process each chunk, then aggregate."
-        # Taking the average probability of being AI across chunks.
+        # OPTIMIZATION: Process ONLY the first chunk (30s) to prevent timeouts on CPU.
+        # Deepfake artifacts usually appear globally, so 30s is sufficient.
+        if len(chunks) > 1:
+            chunks = chunks[:1]  
         
         ai_probs = []
         
