@@ -20,7 +20,6 @@ app = FastAPI(
     description="Hackathon API for detecting AI-generated speech using Wav2Vec2",
     version="1.0.0",
     lifespan=lifespan
-    lifespan=lifespan
 )
 
 @app.exception_handler(HTTPException)
