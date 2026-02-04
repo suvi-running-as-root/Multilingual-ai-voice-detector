@@ -61,28 +61,13 @@ async def detect_voice(request: DetectRequest):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @router.get("/detect", response_model=DetectResponse, dependencies=[Depends(verify_api_key)])
-async def detect_voice_get(audio_url: Optional[str] = None):
+async def detect_get(audio_url: str):
     """
-    GET handler for easier testing (e.g. via browser or simple calls).
-    Requires 'audio_url' query parameter.
+    GET handler for Hackathon Tester. 
+    Wraps the POST logic.
     """
-    if not audio_url:
-        raise HTTPException(
-            status_code=400, 
-            detail="Please provide 'audio_url' query parameter for GET requests, or use POST with JSON body."
-        )
-    
-    try:
-        # Reusing the existing processing logic
-        audio_array = process_audio_input(None, audio_url)
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Audio processing failed: {str(e)}")
-
-    try:
-        detector = get_detector()
-        result = detector.detect_fraud(audio_array)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    # Create request object
+    request = DetectRequest(audio_url=audio_url)
+    # Call the existing logic (we can call the service directly or the function)
+    # Calling the service logic directly ensures cleaner execution stack
+    return await detect_voice(request)
