@@ -208,13 +208,15 @@ class VoiceDetector:
         # --- Audio Loading & Preprocessing ---
         raw_y, raw_sr = self._load_audio(input_audio)
         y, sr = self._preprocess_audio(raw_y, raw_sr)
-        chunks = self._chunk_audio(y, sr)
-        
         # --- Primary AI vs Human detection ---
-        # OPTIMIZATION: Process ONLY the first chunk (30s) to prevent timeouts on CPU.
-        # Deepfake artifacts usually appear globally, so 30s is sufficient.
-        if len(chunks) > 1:
-            chunks = chunks[:1]  
+        # SUPER OPTIMIZATION: Hard cap to 10 seconds.
+        # 16000 Hz * 10 seconds = 160000 samples
+        max_samples = 16000 * 10
+        if len(y) > max_samples:
+            y = y[:max_samples]
+            
+        # Re-chunking is trivial now (it will be 1 chunk)
+        chunks = self._chunk_audio(y, sr)  
         
         ai_probs = []
         
