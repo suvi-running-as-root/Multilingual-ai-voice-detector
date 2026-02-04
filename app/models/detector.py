@@ -31,29 +31,14 @@ class VoiceDetector:
         )
         self.model.eval()
         
-        # 2. Transcription and Translation (Whisper Tiny - Optimized for CPU/Hackathon Speed)
-        self.whisper_model_name = "openai/whisper-tiny"
-        print(f"Loading Whisper Model: {self.whisper_model_name} ...")
-        self.transcriber = pipeline(
-            "automatic-speech-recognition",
-            model=self.whisper_model_name,
-            chunk_length_s=30
-        )
+        # 2. Transcription and Translation (DISABLED FOR SPEED)
+        self.whisper_model_name = None 
+        self.transcriber = None
         
-        # 3. Fraud Keywords
-        self.fraud_keywords = [
-            "otp", "one time password", "bank", "account", "loan", 
-            "gift card", "prize", "refund", "verification code", 
-            "upi", "password", "cvv", "card number", "expiry date",
-            # Indian Context Scams
-            "aadhar", "pan card", "kyc", "update", "block", 
-            "paytm", "phonepe", "gpay", "google pay",
-            "customs", "parsel", "fedex", "police", "cbi", "narcotics",
-            "arrest", "drugs", "illegal", "money laundering",
-            "lottery", "kbc", "lucky draw", "rbi", "income tax"
-        ]
+        # 3. Fraud Keywords (DISABLED FOR SPEED)
+        self.fraud_keywords = []
         
-        print("All Models loaded successfully.")
+        print("AI Detector loaded successfully. (Whisper/Fraud disabled for performance)")
 
     @classmethod
     def get_instance(cls):
@@ -331,137 +316,23 @@ class VoiceDetector:
         confidence = max(final_p_ai, 1 - final_p_ai)
         p_ai = final_p_ai # Update for reporting
         
-        # --- Transcription and language detection ---
-        # Run Whisper on the processed *full* audio (y) for best context, 
-        # or raw audio if preprocessing distorts speech too much for ASR? 
-        # Prompt says "Run model on the preprocessed waveform" for AI detection.
-        # For Transcription, it just says "Run openai/whisper-medium".
-        # Whisper is robust to noise, but cleanly preprocessed audio is usually better. 
-        # I will use the preprocessed audio `y`.
+        # --- Transcription and language detection (DISABLED) ---
+        transcription = "Fraud detection disabled for hackathon optimization"
+        english_translation = "Fraud detection disabled"
+        detected_language = "N/A"
         
-        # Only issue: pipeline expects raw audio or file. can pass np array.
-        # Whisper pipeline handles float32 arrays.
-        
-        transcription_result = self.transcriber(
-            y, 
-            generate_kwargs={"task": "transcribe"}
-        )
-        transcription = transcription_result.get("text", "").strip()
-        
-        # Attempt to extract language if available in result chunks or via direct model call.
-        # The pipeline output usually contains chunks. 
-        # To get detected language, we might need access to the `generate_kwargs` return or 
-        # check if pipeline returns it. 
-        # Standard pipeline return is just text or chunks.
-        # To get language, we might need to rely on the fact that pipeline doesn't explicitly return it easily 
-        # without `return_timestamps=True` sometimes giving extra info, or we assume English if not provided.
-        # ACTUALLY, checking huggingface docs: 
-        # We can force the pipeline to return language? No. 
-        # Workaround: The prompt asks for "detected_language". 
-        # The underlying model.generate() returns token ids, one of which is language token.
-        # Since I am using pipeline, getting the detected language is tricky.
-        # I will use a separate call to model.generate if pipeline doesn't expose it, 
-        # OR I will rely on the fact that if I don't provide language, it detects it.
-        # Let's inspect the chunks or forced logic.
-        # 
-        # Simpler approach (and more robust for "implement exactly"): 
-        # Use the pipeline's underlying tokenizer/processor feature if possible.
-        # 
-        # However, for the sake of specific requirement "Let detected_language = language code", 
-        # I might need to run the processor manually for the first chunk to get the language token.
-        # 
-        # ALTERNATIVE: Use `return_language=True`? No such param.
-        # 
-        # Let's try to infer it or just assume 'en' if not easily accessible, 
-        # BUT the prompt relies on it for "English translation".
-        # 
-        # Let's use the `model.generate` approach for language detection on the first chunk, 
-        # then let pipeline handle the full text.
-        # Or better: pipeline has a `return_detected_language` parameter in newer versions? Wait.
-        # No.
-        # 
-        # I'll stick to: Run pipeline. To detect language, I'll sneakily access the model's logic 
-        # or just assume the user accepts a best-effort if I can't extract it easily from high-level pipeline.
-        # 
-        # WAIT! `pipeline` object in transformers for ASR sometimes has `model` attribute.
-        # I can run `processor(audio)` -> `input_features`. 
-        # `model.generate(..., return_dict_in_generate=True, output_scores=True)` -> tokens.
-        # The language token is usually the first one generated.
-        # 
-        # Let's add a helper for language detection using the first 30s.
-        
-        detected_language = "en" # Default
-        try:
-            # Use Whisper's built-in language detection
-            feature_extractor_whisper = self.transcriber.feature_extractor
-            model_whisper = self.transcriber.model
-            
-            # Get input features for first 30 seconds 
-            sample = y[:16000*30]
-            input_features = feature_extractor_whisper(
-                sample, sampling_rate=16000, return_tensors="pt"
-            ).input_features
-            
-            # Use model's detect_language method if available (newer transformers)
-            if hasattr(model_whisper, 'detect_language'):
-                lang_probs = model_whisper.detect_language(input_features)
-                # This returns a tensor of probabilities for each language
-                # Get the id and convert to language code
-                lang_id = lang_probs[0].argmax().item()
-                # Access the generation config for language mapping
-                config = model_whisper.generation_config
-                if hasattr(config, 'lang_to_id'):
-                    id_to_lang = {v: k for k, v in config.lang_to_id.items()}
-                    detected_language = id_to_lang.get(lang_id, "en").replace("<|", "").replace("|>", "")
-            else:
-                # Fallback: generate first few tokens and parse
-                generated_ids = model_whisper.generate(input_features, max_new_tokens=5)
-                decoded = self.transcriber.tokenizer.decode(generated_ids[0])
-                # format example: "<|startoftranscript|><|en|><|transcribe|>"
-                import re
-                langs = re.findall(r"<\|([a-z]{2})\|>", decoded)
-                if langs:
-                    detected_language = langs[0]
-                    
-        except Exception as e:
-            print(f"Language detection failed: {e}")
-            detected_language = "en"
-
-        # --- English Translation ---
-        english_translation = transcription
-        if detected_language != "en":
-            try:
-                trans_result = self.transcriber(
-                    y, 
-                    generate_kwargs={"task": "translate"}
-                )
-                english_translation = trans_result.get("text", "").strip()
-            except Exception as e:
-                print(f"Translation failed: {e}")
-                
-        # --- Fraud Keyword Analysis ---
+        # --- Fraud Keyword Analysis (DISABLED) ---
         found_keywords = []
-        lower_text = english_translation.lower()
-        for kw in self.fraud_keywords:
-            if kw in lower_text:
-                found_keywords.append(kw)
-        
-        # --- Scoring ---
         overall_risk = "LOW"
-        if classification == "AI" and found_keywords:
-            overall_risk = "HIGH"
-        elif found_keywords:
-            overall_risk = "MEDIUM"
-        else:
-            overall_risk = "LOW"
-            
+        
         # --- Explanation String ---
-        # "AI probability 0.83, Deepfake detector classified as AI, fraud-related terms detected: OTP, bank"
         parts = []
         parts.append(f"AI probability {round(p_ai, 2)}")
         parts.append(f"Deepfake detector classified as {classification}")
-        if found_keywords:
-            parts.append(f"fraud-related terms detected: {', '.join(found_keywords)}")
+        if heuristic_score > 0.5:
+             parts.append("Robotic voice patterns detected")
+        elif pitch_score > 0.75:
+             parts.append("Natural human pitch variations detected")
         
         explanation = ", ".join(parts)
         
