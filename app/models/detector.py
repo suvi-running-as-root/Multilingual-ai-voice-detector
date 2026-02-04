@@ -315,14 +315,15 @@ class VoiceDetector:
              final_p_ai = max(final_p_ai, heuristic_score)
              
         # 3. Human Rescue
-        if pitch_score > 0.6:  # Strict threshold (requires high jitter)
+        if pitch_score > 0.75 and final_p_ai < 0.95:  # Stricter threshold, avoid overriding high confidence
             # Cap AI probability if it's high
             if final_p_ai > 0.5:
                 # Strong Human Features detected.
                 # If model is confident (e.g. 0.9), but pitch is Human (0.8) -> Trust Pitch?
-                # Let's say we pull it down.
-                reduction_factor = pitch_score * 0.8 # up to 0.8 reduction
+                # Lowered influence to avoid false negatives on high-quality TTS
+                reduction_factor = pitch_score * 0.4 # up to 0.4 reduction
                 final_p_ai = max(0.1, final_p_ai - reduction_factor)
+                print(f"DEBUG: Human Rescue Triggered -> Pitch={pitch_score}, New Prob={final_p_ai}")
                 print(f"DEBUG: Before Return -> Pitch={pitch_score}, Smooth={smoothness}, Var={time_variance}, Probs={probs}")
         
         classification = "AI" if final_p_ai > 0.5 else "Human"

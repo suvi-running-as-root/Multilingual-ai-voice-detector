@@ -71,3 +71,71 @@ async def detect_get(audio_url: str):
     # Call the existing logic (we can call the service directly or the function)
     # Calling the service logic directly ensures cleaner execution stack
     return await detect_voice(request)
+
+# --- Strict Hackathon Specification ---
+
+class HackathonRequest(BaseModel):
+    language: str
+    audioFormat: str
+    audioBase64: str
+
+class HackathonResponse(BaseModel):
+    status: str
+    language: str
+    classification: str
+    confidenceScore: float
+    explanation: str
+
+from fastapi.responses import JSONResponse
+
+@router.post("/api/voice-detection", response_model=HackathonResponse, dependencies=[Depends(verify_api_key)])
+async def detect_voice_strict(request: HackathonRequest):
+    """
+    Strict endpoint for Hackathon evaluation.
+    Path: /api/voice-detection
+    """
+    # 1. format check
+    if request.audioFormat.lower() != "mp3":
+        return JSONResponse(
+            status_code=400, 
+            content={"status": "error", "message": "Only mp3 format supported"}
+        )
+
+    try:
+        # 2. process audio
+        # Reuse existing logic via wrapper or direct call
+        # process_audio_input expects (audio_base64, audio_url)
+        # It handles base64 decoding.
+        
+        # NOTE: process_audio_input returns numpy array
+        audio_array = process_audio_input(request.audioBase64, None)
+        
+        # 3. Detect
+        detector = get_detector()
+        result = detector.detect_fraud(audio_array)
+        
+        # 4. Map Result
+        # result: {"classification": "AI"|"Human", "confidence_score": 0.xx, "explanation": "..."}
+        
+        mapping = {"AI": "AI_GENERATED", "Human": "HUMAN"}
+        final_class = mapping.get(result.get("classification"), "HUMAN")
+        
+        return {
+            "status": "success",
+            "language": request.language,
+            "classification": final_class,
+            "confidenceScore": result.get("confidence_score", 0.0),
+            "explanation": result.get("explanation", "Analysis completed")
+        }
+
+    except HTTPException as he:
+        # Re-wrap HTTP exceptions to strict JSON format
+        return JSONResponse(
+            status_code=he.status_code,
+            content={"status": "error", "message": he.detail}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Server error: {str(e)}"}
+        )
