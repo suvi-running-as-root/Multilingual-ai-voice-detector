@@ -114,7 +114,7 @@ async def detect_voice_strict(request: HackathonRequest):
         
         # NOTE: process_audio_input returns (numpy array, metadata)
         # OPTIMIZATION: Decode ONLY 6 seconds max to prevent timeouts on large files
-        audio_array, metadata = process_audio_input(request.audioBase64, None, max_duration=6.0)
+        audio_array, metadata = process_audio_input(request.audioBase64, None, max_duration=4.0)
         if audio_array is None or (hasattr(audio_array, "size") and audio_array.size == 0):
             return JSONResponse(
                 status_code=400,
