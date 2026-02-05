@@ -281,8 +281,8 @@ class VoiceDetector:
             # Variance < 0.01 is often AI
             
             # Heuristic Score Calculation
-            # Lowered smoothness threshold from 0.90 to 0.88 to catch high-quality TTS
-            score_smooth = max(0, (smoothness - 0.88) * 10) 
+            # Raised smoothness threshold back to 0.92 to avoid false positives on short clips
+            score_smooth = max(0, (smoothness - 0.92) * 10) 
             score_var = max(0, 1.0 - (time_variance * 50))
             
             heuristic_score = (score_smooth + score_var) / 2.0
@@ -298,18 +298,17 @@ class VoiceDetector:
         final_p_ai = p_ai_model
         
         # 2. Heuristic Adjustments (Boost AI score)
-        if heuristic_score > 0.5: # Lowered from 0.7 to 0.5 to catch more AI
+        if heuristic_score > 0.7: # Raised back to 0.7 to avoid over-triggering
              # Strong signal that audio is "Robotic/Smooth" -> Boost AI score
              final_p_ai = max(final_p_ai, heuristic_score)
              
         # 3. Human Rescue
-        # CRITICAL FIX: Do NOT rescue if Heuristics think it's AI (heuristic_score > 0.4)
-        # Only rescue if it looks Human AND Heuristics don't see robotic patterns.
-        if pitch_score > 0.75 and final_p_ai < 0.95 and heuristic_score < 0.4:
+        # Removed strict heuristic block. Short clips might seem smooth but have human pitch.
+        if pitch_score > 0.75 and final_p_ai < 0.98: # Allow rescue even if model is 0.95 (up to 0.98 now)
             # Cap AI probability if it's high
             if final_p_ai > 0.5:
-                # Strong Human Features detected AND No Robotic Features.
-                reduction_factor = pitch_score * 0.4 
+                # Strong Human Features detected.
+                reduction_factor = pitch_score * 0.5 # Increased reduction slightly (0.4 -> 0.5)
                 final_p_ai = max(0.1, final_p_ai - reduction_factor)
                 print(f"DEBUG: Human Rescue Triggered -> Pitch={pitch_score}, New Prob={final_p_ai}")
                 print(f"DEBUG: Before Return -> Pitch={pitch_score}, Smooth={smoothness}, Var={time_variance}, Probs={probs}")
