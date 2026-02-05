@@ -375,23 +375,25 @@ class VoiceDetector:
              final_p_ai = max(final_p_ai, boost)
 
         # B. Human Rescue (Pitch Physics + Background Noise)
-        # We need EITHER strong pitch evidence OR moderate pitch evidence + noise
+        # CRITICAL: Rescue ONLY if Model ALSO agrees (< 50% AI).
+        # High-quality AI (ElevenLabs) can fake pitch jitter, so we must respect the model.
         
         is_noisy_human = (snr_val < 25) # Natural background noise
         has_human_pitch = (pitch_score > 0.70) # Lowered from 0.75
+        model_says_human = (p_ai_model < 0.50) # Model must also lean Human
         
         # Rescue Conditions:
-        # 1. Strong Pitch Evidence
-        # 2. Moderate Pitch + Background Noise
+        # 1. Model says Human (<50%) AND Strong Pitch Evidence
+        # 2. Model says Human (<50%) AND Moderate Pitch + Background Noise
         
         should_rescue = False
         rescue_strength = 0.0
         
-        if has_human_pitch:
+        if model_says_human and has_human_pitch:
             should_rescue = True
             rescue_strength = pitch_score * 0.6 # Stronger rescue (was 0.5)
             
-        if is_noisy_human and pitch_score > 0.4:
+        if model_says_human and is_noisy_human and pitch_score > 0.4:
             # If it's noisy and has even mediocre pitch variance, it's likely human
             # (AI usually doesn't simulate background noise + pitch jitter together well)
             should_rescue = True
