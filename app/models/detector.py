@@ -1,7 +1,7 @@
+import time
 import torch
 import numpy as np
 import librosa
-import torch
 import numpy as np
 import librosa
 # import noisereduce as nr (Disabled: causes artifacts)
@@ -22,15 +22,32 @@ class VoiceDetector:
         
         # 1. Primary AI vs Human detection (language-agnostic)
         # Using a multilingual XLS-R based model for better Hindi/non-English support
-        self.detector_model_name = "Gustking/wav2vec2-large-xlsr-deepfake-audio-classification"
+        self.detector_model_name = "facebook/wav2vec2-base"
         print(f"Loading AI Detector: {self.detector_model_name} ...")
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
             self.detector_model_name
         )
-        self.model = AutoModelForAudioClassification.from_pretrained(
-            self.detector_model_name
-        )
+        from transformers import Wav2Vec2Model
+        self.model = Wav2Vec2Model.from_pretrained(self.detector_model_name)
+
+
         self.model.eval()
+        for param in self.model.parameters():
+          param.requires_grad = False
+
+        hidden_size = self.model.config.hidden_size
+
+        self.classifier = torch.nn.Linear(hidden_size, 2)
+        self.classifier.eval()
+
+        
+
+        self.model = torch.quantization.quantize_dynamic(
+         self.model,
+       {torch.nn.Linear},
+        dtype=torch.qint8
+        )
+
         
         # 2. Transcription and Translation (DISABLED FOR SPEED)
         self.whisper_model_name = None 
@@ -101,12 +118,10 @@ class VoiceDetector:
         
         # 3. Silence Trimming
         # top_db=20 is a common default, adjusting as needed. Prompt didn't specify db.
-        y, _ = librosa.effects.trim(y)
+        y, _ = librosa.effects.trim(y, top_db=30)
         
         # 4. Normalization to -1..1
-        max_val = np.abs(y).max()
-        if max_val > 0:
-            y = y / max_val
+        
             
         return y, target_sr
 
@@ -194,30 +209,32 @@ class VoiceDetector:
             # 2. Jitter Proxy (Frame-to-frame absolute difference)
             jitter = np.mean(np.abs(np.diff(f0)))
             
-            # Normalize (Heuristics) - "Goldilocks Trapezoid" based on pYIN
-            # Human Jitter: 2Hz - 8Hz is the "Sweet Spot".
-            # < 1Hz: Robotic.
-            # > 10Hz: Unnatural/Noisy.
-            
-            if jitter < 1.0:
-                score_jitter = 0.0
-            elif 1.0 <= jitter < 2.0:
-                score_jitter = (jitter - 1.0) # Ramp 0->1
-            elif 2.0 <= jitter <= 8.0:
-                score_jitter = 1.0 # Sweet spot
-            elif 8.0 < jitter < 12.0:
-                score_jitter = 1.0 - ((jitter - 8.0) / 4.0) # Ramp 1->0
-            else: # > 12.0
-                score_jitter = 0.0
-                 
-            # Std Score
-            if pitch_std < 5.0:
-                score_std = 0.0 # Monotone
+            # Normalize (Heuristics) - More lenient for multilingual support
+            # Human Jitter: 1.5Hz - 10Hz is acceptable
+            # < 0.8Hz: Very robotic (AI)
+            # > 15Hz: Too noisy/unstable
+
+            if jitter < 0.8:
+                score_jitter = 0.0  # Very robotic
+            elif 0.8 <= jitter < 1.5:
+                score_jitter = (jitter - 0.8) / 0.7  # Ramp 0->1
+            elif 1.5 <= jitter <= 10.0:
+                score_jitter = 1.0  # Human range (expanded)
+            elif 10.0 < jitter < 15.0:
+                score_jitter = 1.0 - ((jitter - 10.0) / 5.0)  # Ramp 1->0
+            else:  # > 15.0
+                score_jitter = 0.0  # Too noisy
+
+            # Std Score - More lenient
+            if pitch_std < 3.0:
+                score_std = 0.0  # Very monotone
+            elif pitch_std < 8.0:
+                score_std = pitch_std / 8.0  # Ramp 0->1
             else:
-                score_std = min(1.0, pitch_std / 20.0) # 25Hz std is good
-            
-            # Weight Jitter higher (80%) because intonation (std) is easy to fake
-            final_score = (score_std * 0.2) + (score_jitter * 0.8)
+                score_std = 1.0  # Good variation
+
+            # Balanced weighting (60% jitter, 40% std)
+            final_score = (score_std * 0.4) + (score_jitter * 0.6)
             
             print(f"DEBUG: Pitch Analysis -> Std={pitch_std:.2f} (Score={score_std:.2f}), Jitter={jitter:.2f} (Score={score_jitter:.2f}) -> Final={final_score:.2f}")
             
@@ -230,6 +247,12 @@ class VoiceDetector:
             return 0.0
 
     def detect_fraud(self, input_audio, metadata=None):
+        import time
+        start_time = time.time()
+        
+        
+
+
         # Initialize diagnostics
         smoothness = 0.0
         time_variance = 0.0
@@ -262,114 +285,239 @@ class VoiceDetector:
             raise HTTPException(status_code=400, detail="Decoded audio contained no samples after preprocessing")
         
         # --- Primary AI vs Human detection ---
-        # TURBO MODE: 2 seconds max for Railway hackathon timeout.
-        # 16000 Hz * 2 seconds = 32000 samples
-        max_samples = 16000 * 2
+        # OPTIMIZED MODE: 3 seconds max with enhanced heuristics
+        max_samples = 16000 * 3
         if len(y) > max_samples:
             y = y[:max_samples]
-            
+
+        # Normalize only the sliced audio (faster)
+        max_val = np.abs(y).max()
+        if max_val > 0:
+           y = y / max_val
+
+
         # Re-chunking is trivial now (it will be 1 chunk)
         chunks = [c for c in self._chunk_audio(y, sr) if len(c) > 0]
         if not chunks:
             raise HTTPException(status_code=400, detail="Audio contained no decodable frames")
-        
+
         ai_probs = []
-        
+        embeddings_list = []
+
         for chunk in chunks:
-            # Prepare inputs
-            # Wav2Vec2 inputs
-            # Processor requires list of numpy arrays, but we usually pass one by one or batched.
-            # padding=True/False depends on if we batch. Here iterative.
+            # Prepare inputs for Wav2Vec2
             inputs = self.feature_extractor(
-                chunk, 
-                sampling_rate=sr, 
-                return_tensors="pt", 
+                chunk,
+                sampling_rate=sr,
+                return_tensors="pt",
                 padding=True
             )
-            
+
             with torch.no_grad():
-                logits = self.model(**inputs).logits
-            
+               outputs = self.model(**inputs)
+               hidden_states = outputs.last_hidden_state  # (batch, time, hidden)
+
+              # Store embeddings for heuristic analysis
+               embeddings_list.append(hidden_states)
+
+              # Mean pooling over time dimension
+               pooled = hidden_states.mean(dim=1)
+
+               logits = self.classifier(pooled)
+
+
             # Apply softmax
             probs = F.softmax(logits, dim=-1)
-            print(f"DEBUG: Probs: {probs[0].tolist()}, Labels: {self.model.config.id2label}")
-            
-            # Check model labels
-            # Confirmed via debug: {0: 'real', 1: 'fake'}
-            # Index 1 is AI/Fake.
+            print(f"DEBUG: Model Probs: {probs[0].tolist()}")
+
+            # The untrained classifier gives random predictions
+            # We'll use heuristics instead for better accuracy
             p_ai_chunk = probs[0][1].item()
-            
-            # Robustness check: if model has id2label, we could use it.
             ai_probs.append(p_ai_chunk)
-            
-        # Aggregate
-        p_ai_model = sum(ai_probs) / len(ai_probs) if ai_probs else 0.0
-        
-        # --- TURBO MODE: Skip ALL heuristics for maximum speed ---
-        # No embeddings, no pYIN, no SNR. Pure model-based classification.
-        heuristic_score = 0.0
-        smoothness = 0.0
-        time_variance = 0.0
-        pitch_score = 0.0
-        p_std = 0.0
-        p_jitter = 0.0
-        snr_val = 0.0
-        snr_score = 0.0
-        
-        print(f"DEBUG: TURBO MODE -> ModelProb={p_ai_model:.3f}")
-        
-        # Base Model Probability (no adjustments in turbo mode)
-        final_p_ai = p_ai_model
-        
-        # --- Heuristic Adjustments ---
-        
-        # A. Boost AI if Robotic (Smoothness + Variance + High SNR)
-        # If Heuristic Score is high AND audio is super clean -> Boost AI
-        if heuristic_score > 0.65: 
-             boost = heuristic_score
-             if snr_score > 0: # It's also super clean
-                 boost = min(1.0, boost + 0.1)
-             
-             final_p_ai = max(final_p_ai, boost)
 
-        # B. Human Rescue (Pitch Physics + Background Noise)
-        # CRITICAL: Rescue ONLY if Model ALSO agrees (< 50% AI).
-        # High-quality AI (ElevenLabs) can fake pitch jitter, so we must respect the model.
-        
-        is_noisy_human = (snr_val < 25) # Natural background noise
-        has_human_pitch = (pitch_score > 0.70) # Lowered from 0.75
-        model_says_human = (p_ai_model < 0.50) # Model must also lean Human
-        
-        # Rescue Conditions:
-        # 1. Model says Human (<50%) AND Strong Pitch Evidence
-        # 2. Model says Human (<50%) AND Moderate Pitch + Background Noise
-        
-        should_rescue = False
-        rescue_strength = 0.0
-        
-        if model_says_human and has_human_pitch:
-            should_rescue = True
-            rescue_strength = pitch_score * 0.6 # Stronger rescue (was 0.5)
-            
-        if model_says_human and is_noisy_human and pitch_score > 0.4:
-            # If it's noisy and has even mediocre pitch variance, it's likely human
-            # (AI usually doesn't simulate background noise + pitch jitter together well)
-            should_rescue = True
-            rescue_strength = max(rescue_strength, 0.4)
-            
-        if should_rescue and final_p_ai < 0.99: # Allow rescue even for high confidence
-            original_p = final_p_ai
-            final_p_ai = max(0.05, final_p_ai - rescue_strength)
-            print(f"DEBUG: Human Rescue Triggered -> Pitch={pitch_score}, SNR={snr_val}, RescueStrength={rescue_strength:.2f}, {original_p:.2f}->{final_p_ai:.2f}")
+        # Aggregate model prediction (untrained, not reliable)
+        p_ai_model = sum(ai_probs) / len(ai_probs) if ai_probs else 0.5
 
-        # C. Metadata Note (no longer overrides classification)
-        # Metadata is treated as a weak prior only; audio evidence must exist.
+        # --- ENHANCED HEURISTICS MODE ---
+        # Since the model is untrained, we rely heavily on acoustic heuristics
+
+        # 1. Calculate Pitch-based features (most reliable for AI detection)
+        pitch_score, p_std, p_jitter = self._calculate_pitch_score(y, sr)
+
+        # 2. Calculate SNR (AI voices are usually cleaner)
+        snr_val = self._calculate_snr(y)
+
+        # SNR scoring: High SNR (studio quality) suggests AI
+        if snr_val > 50:
+            snr_score = 0.3  # Strong AI indicator
+        elif snr_val > 40:
+            snr_score = 0.15  # Moderate AI indicator
+        elif snr_val < 25:
+            snr_score = -0.2  # Human indicator (background noise)
+        else:
+            snr_score = 0.0  # Neutral
+
+        # 3. Calculate temporal smoothness (AI voices have consistent embeddings)
+        if embeddings_list:
+            smoothness = self._calculate_smoothness(embeddings_list[0])
+
+            # High smoothness suggests AI (less natural variation)
+            if smoothness > 0.95:
+                smoothness_score = 0.25
+            elif smoothness > 0.90:
+                smoothness_score = 0.15
+            else:
+                smoothness_score = 0.0
+        else:
+            smoothness = 0.0
+            smoothness_score = 0.0
+
+        # Calculate variance in embedding magnitudes
+        if embeddings_list:
+            magnitudes = torch.norm(embeddings_list[0][0], dim=1).cpu().numpy()
+            time_variance = float(np.std(magnitudes))
+
+            # Low variance suggests AI (consistent energy)
+            if time_variance < 0.5:
+                variance_score = 0.15
+            else:
+                variance_score = 0.0
+        else:
+            time_variance = 0.0
+            variance_score = 0.0
+
+        # Combined heuristic score (AI indicators)
+        heuristic_score = smoothness_score + variance_score + max(0, snr_score)
+
+        print(f"DEBUG: Heuristics -> Pitch={pitch_score:.2f}, SNR={snr_val:.1f}, Smooth={smoothness:.3f}, Variance={time_variance:.3f}")
+
+        # --- INTELLIGENT DECISION MAKING ---
+        # Start with neutral baseline
+        base_probability = 0.5
+
+        # Pitch is the MOST reliable indicator
+        # Score: 0.0 (robotic/AI) to 1.0 (natural/human)
+        # Map to AI probability: invert the score
+        if pitch_score > 0.70:
+            # Strong human pitch characteristics
+            pitch_adjustment = -0.25  # Push toward human
+        elif pitch_score > 0.50:
+            # Moderate human pitch
+            pitch_adjustment = -0.15
+        elif pitch_score < 0.25:
+            # Very robotic pitch
+            pitch_adjustment = +0.25  # Push toward AI
+        elif pitch_score < 0.40:
+            # Somewhat robotic
+            pitch_adjustment = +0.15
+        else:
+            # Neutral pitch
+            pitch_adjustment = 0.0
+
+        # SNR Analysis (secondary indicator)
+        # Very clean = AI, Very noisy = Human
+        if snr_val > 50:
+            snr_adjustment = +0.15  # Likely AI (studio quality)
+        elif snr_val > 40:
+            snr_adjustment = +0.08  # Possibly AI
+        elif snr_val < 20:
+            snr_adjustment = -0.15  # Likely Human (noisy)
+        elif snr_val < 30:
+            snr_adjustment = -0.08  # Possibly Human
+        else:
+            snr_adjustment = 0.0  # Neutral
+
+        # Temporal smoothness (tertiary indicator)
+        # Very smooth = AI, Variable = Human
+        if smoothness > 0.95:
+            smoothness_adjustment = +0.10
+        elif smoothness > 0.92:
+            smoothness_adjustment = +0.05
+        elif smoothness < 0.85:
+            smoothness_adjustment = -0.05
+        else:
+            smoothness_adjustment = 0.0
+
+        # Energy variance (tertiary indicator)
+        if time_variance < 0.3:
+            variance_adjustment = +0.05  # Very consistent = AI
+        elif time_variance > 0.8:
+            variance_adjustment = -0.05  # Very variable = Human
+        else:
+            variance_adjustment = 0.0
+
+        # Calculate final AI probability
+        final_p_ai = (
+            base_probability +
+            pitch_adjustment +
+            snr_adjustment +
+            smoothness_adjustment +
+            variance_adjustment
+        )
+
+        # Clamp to [0, 1]
+        final_p_ai = max(0.0, min(1.0, final_p_ai))
+
+        print(f"DEBUG: AI Probability -> Base={base_probability:.2f}, Pitch={pitch_adjustment:+.2f}, SNR={snr_adjustment:+.2f}, Smooth={smoothness_adjustment:+.2f}, Var={variance_adjustment:+.2f} = {final_p_ai:.2f}")
+        
+        # --- Combined Signal Refinements ---
+        # Look for combinations that strongly indicate one or the other
+
+        # Strong Human: Natural pitch + Background noise
+        is_natural_pitch = (pitch_score > 0.60)
+        has_background_noise = (snr_val < 30)
+
+        if is_natural_pitch and has_background_noise:
+            # Very strong human indicator
+            final_p_ai = min(final_p_ai, 0.30)  # Cap at 30% AI probability
+            print(f"DEBUG: Strong HUMAN signal (pitch={pitch_score:.2f}, SNR={snr_val:.1f}) -> Capped at 0.30")
+
+        # Strong AI: Robotic pitch + Studio quality
+        is_robotic_pitch = (pitch_score < 0.35)
+        is_studio_quality = (snr_val > 45)
+
+        if is_robotic_pitch and is_studio_quality:
+            # Very strong AI indicator
+            final_p_ai = max(final_p_ai, 0.70)  # Floor at 70% AI probability
+            print(f"DEBUG: Strong AI signal (pitch={pitch_score:.2f}, SNR={snr_val:.1f}) -> Floored at 0.70")
+
+        # Moderate Human: Good pitch variation alone
+        if pitch_score > 0.75 and final_p_ai > 0.4:
+            final_p_ai = min(final_p_ai, 0.40)
+            print(f"DEBUG: Excellent human pitch ({pitch_score:.2f}) -> Capped at 0.40")
+
+        # Moderate AI: Very smooth + clean (but not robotic pitch)
+        is_very_smooth = (smoothness > 0.93)
+        if is_very_smooth and is_studio_quality and final_p_ai < 0.6:
+            final_p_ai = max(final_p_ai, 0.60)
+            print(f"DEBUG: Very smooth + clean -> Floored at 0.60")
+
+        # C. Metadata boost (weak signal)
         if metadata_hit:
             metadata_note = metadata_explanation or "Suspicious encoder metadata detected"
-            final_p_ai = min(1.0, final_p_ai + 0.1)
-        
-        classification = "AI" if final_p_ai > 0.5 else "Human"
-        confidence = max(final_p_ai, 1 - final_p_ai)
+            final_p_ai = min(0.95, final_p_ai + 0.10)
+        else:
+            metadata_note = None
+
+        # Clamp final probability
+        final_p_ai = max(0.0, min(1.0, final_p_ai))
+
+        # Classification with 0.5 threshold
+        classification = "AI" if final_p_ai >= 0.5 else "Human"
+
+        # Confidence calculation - distance from threshold
+        # Convert AI probability to confidence in the classification
+        if final_p_ai >= 0.5:
+            # Classified as AI - confidence increases as we move toward 1.0
+            # Map 0.5->1.0 to 0.5->1.0
+            confidence = 0.5 + (final_p_ai - 0.5)  # Linear: 0.5 at threshold, 1.0 at certainty
+        else:
+            # Classified as Human - confidence increases as we move toward 0.0
+            # Map 0.0->0.5 to 1.0->0.5
+            confidence = 0.5 + (0.5 - final_p_ai)  # Linear: 0.5 at threshold, 1.0 at certainty
+
+        # Ensure confidence stays in valid range
+        confidence = max(0.5, min(1.0, confidence))
         p_ai = final_p_ai # Update for reporting
         
         # --- Transcription and language detection (DISABLED) ---
@@ -400,6 +548,8 @@ class VoiceDetector:
         
         # Calculate audio duration for diagnostics
         audio_duration_seconds = round(len(y) / sr, 2)
+        end_time = time.time()
+        print(f"[TIMING] detect_fraud inference time: {(end_time - start_time)*1000:.2f} ms")
         
         return {
             "classification": classification,

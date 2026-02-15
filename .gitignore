@@ -22,3 +22,22 @@ env/
 # Testing/Coverage
 .coverage
 htmlcov/
+
+# Audio files (exclude from git)
+*.mp3
+*.mpeg
+*.wav
+*.ogg
+
+# PDFs
+*.pdf
+
+# Large datasets and downloads
+dataset/
+downloads/
+checkpoints/
+26.0.1
+
+# Logs
+*.log
+elevenlabs_processing_log.json
