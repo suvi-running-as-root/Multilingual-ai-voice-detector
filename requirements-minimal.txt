@@ -1,0 +1,23 @@
+# Minimal requirements for Railway deployment
+# Optimized to avoid timeout issues
+
+# Core API
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.7
+python-dotenv==1.0.1
+pydantic
+
+# ML Libraries (specific versions for faster install)
+torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu
+torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cpu
+transformers==4.37.2
+
+# Audio Processing
+librosa==0.10.1
+soundfile==0.12.1
+numpy==1.26.4
+scipy==1.12.0
+
+# Utilities
+requests==2.31.0
